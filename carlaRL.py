@@ -12,7 +12,7 @@ import tensorflow as tf
 
 from tensorflow.python.keras.backend import set_session
 from tensorflow.python.keras.models import load_model
-from tensorflow.keras.models import load_model
+
 from tensorflow.keras.layers import Convolution2D, Flatten, AveragePooling2D, GlobalAveragePooling2D, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import Model, Sequential
@@ -277,8 +277,7 @@ class Agent:
 
         self.tensorboard = ModifiedTensorBoard(log_dir=f"logs/{MODEL_NAME}-{int(time.time())}")
         self.target_update_counter = 0  # will track when it's time to update the target model
-        self.first_graph = tf.Graph()
-        self.second_graph = tf.Graph()
+        self.graph = tf.get_default_graph()
 
         self.terminate = False  # Should we quit?
         self.last_logged_episode = 0
@@ -311,7 +310,6 @@ class Agent:
 
         model.add(Dense(8)) # eight actions
         model.compile(loss="mse", optimizer=Adam(lr=0.001), metrics=["accuracy"])
-        
         return model
 
     def update_replay_memory(self, transition):
@@ -329,14 +327,14 @@ class Agent:
         current state
         """
         current_states = np.array([transition[0] for transition in minibatch])/255
-        with self.first_graph.as_default():
+        with self.graph.as_default():
             current_qs_list = self.model.predict(current_states, PREDICTION_BATCH_SIZE)
 
         """
         future states
         """
         new_current_states = np.array([transition[3] for transition in minibatch])/255
-        with self.second_graph.as_default():
+        with self.graph.as_default():
             future_qs_list = self.target_model.predict(new_current_states, PREDICTION_BATCH_SIZE)
 
         X = []
@@ -364,7 +362,7 @@ class Agent:
             self.last_log_episode = self.tensorboard.step
 
         
-        with self.first_graph.as_default():
+        with self.graph.as_default():
             self.model.fit(np.array(X)/255, 
             np.array(y), 
             batch_size=TRAINING_BATCH_SIZE, 
@@ -388,9 +386,9 @@ class Agent:
         # this fits the model with random data to make sure that the model has been created
         X = np.random.uniform(size=(1, IM_HEIGHT, IM_WIDTH, 3)).astype(np.float32)
         y = np.random.uniform(size=(1, 8)).astype(np.float32)
-        with self.first_graph.as_default():
+        with self.graph.as_default():
             self.model.fit(X,y, verbose=False, batch_size=1)
-       
+        
         time.sleep(1)
         
         # initilised the training loop      
@@ -441,8 +439,8 @@ if __name__ == '__main__':
 
     
     # Memory fraction, used mostly when trai8ning multiple agents
-    gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
-    tf.global_variables_initializer()
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
+    
     set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
     
     # Create models folder
