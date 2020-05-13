@@ -7,12 +7,15 @@ import random
 import numpy as np
 import math
 import cv2
-import pygame 
+#import pygame 
 import tensorflow as tf
 
-from tensorflow.keras.layers import Conv2D, Flatten, AveragePooling2D, GlobalAveragePooling2D, Dense, Dropout
+from tensorflow.python.keras.backend import set_session
+from tensorflow.python.keras.models import load_model
+from tensorflow.keras.models import load_model
+from tensorflow.keras.layers import Convolution2D, Flatten, AveragePooling2D, GlobalAveragePooling2D, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras import Model, backend, Sequential
+from tensorflow.keras import Model, Sequential
 from tensorflow.keras.activations import relu
 from collections import deque
 from threading import Thread
@@ -37,25 +40,25 @@ SHOW_PREVIEW = False
 IM_WIDTH = 640
 IM_HEIGHT = 480
 SECONDS_PER_EPISODE = 30
-REPLAY_MEMORY_SIZE = 4_000
-MIN_REPLAY_MEMORY_SIZE = 1_000
+REPLAY_MEMORY_SIZE = 5_000
+MIN_REPLAY_MEMORY_SIZE = 1_500
 MINIBATCH_SIZE = 16
 PREDICTION_BATCH_SIZE = 1
 TRAINING_BATCH_SIZE = MINIBATCH_SIZE // 4
 UPDATE_TARGET_EVERY = 5
-MODEL_NAME = "Initial"
+MODEL_NAME = "Test-3-Cam-Only"
 
-MEMORY_FRACTION = 0.4
+MEMORY_FRACTION = 0.7
 MIN_REWARD = -200
 
-EPISODES = 100
-
-DISCOUNT = 0.99
+EPISODES = 1000
 epsilon = 1
-EPSILON_DECAY = 0.95 ## 0.9975 99975
+DISCOUNT = 0.99
+
+EPSILON_DECAY = 0.995 ## 0.9975 99975
 MIN_EPSILON = 0.001
 
-AGGREGATE_STATS_EVERY = 10
+AGGREGATE_STATS_EVERY = 5
 """
 list of waypoints
 x = 117.6 y = 59.2 z = 0
@@ -109,7 +112,7 @@ class Environment:
         self.spawn_point = carla.Transform(carla.Location(x=147 , y = 59, z = 0.5), carla.Rotation(yaw=180)) # spawn point for the vehicle
         self.vehicle = self.world.spawn_actor(self.bp_car, self.spawn_point)
         self.actor_list.append(self.vehicle)
-
+        
         # ============================================= #
         # Camera sensor                                 #
         # ============================================= #
@@ -134,13 +137,15 @@ class Environment:
         self.actor_list.append(self.bp_collision)
         self.bp_collision.listen(lambda event: self.collision_data(event))
 
-        """
+        
         while self.front_camera is None:
             time.sleep(0.01)
-        """
+        
         self.episode_start = time.time()
 
         self.vehicle.apply_control(carla.VehicleControl(brake=1.0, throttle=0.0))
+        
+        
         return self.front_camera
 
     # ============================================= #
@@ -156,7 +161,7 @@ class Environment:
         img = np.array(image.raw_data) # raw data is flattened array
         img2 = img.reshape((self.im_height, self.im_width, 4)) # reshape image to 640x480 with 4 colour channels RGBA
         img3 = img2[:, :, :3] # removes the alpha values from the image array
-        return img3 # normalised image array    
+        self.front_camera = img3   
 
 
     # ============================================= #
@@ -209,13 +214,49 @@ class Environment:
         """
         if len(self.collision_history) != 0:
             done = True
-            reward = -1
+            reward = -10
         elif KPH > 50:
             done = False
             reward = -1
+        elif KPH > 1 and KPH < 4:
+            done = False
+            reward = 0.2
+        elif KPH > 5 and KPH < 9:
+            done = False
+            reward = 0.215
+        elif KPH > 10 and KPH < 14:
+            done = False
+            reward = 0.275
+        elif KPH > 15 and KPH < 19:
+            done = False
+            reward = 0.3
+        elif KPH > 20 and KPH < 24:
+            done = False
+            reward =0.315
+        elif KPH > 25 and KPH < 29:
+            done = False
+            reward = 0.35
+        elif KPH == 30:
+            done = False
+            reward = 0.45
+        elif KPH > 31 and KPH < 34:
+            done = False
+            reward = 0.2
+        elif KPH > 35 and KHP < 39:
+            done = False
+            reward = 0.15
+        elif KPH > 40:
+            done = False
+            reward = 0
+        elif KPH == 0 and action == 4:  
+            reward = -0.1
+            done= False
+        elif KPH == 0 and action == 5:  
+            reward = -0.1
+            done= False
         else:
             done = False
-            reward = 1
+            reward = -0.01
 
         if self.episode_start + SECONDS_PER_EPISODE < time.time():
             done = True
@@ -231,29 +272,33 @@ class Agent:
         self.model = self.create_model()
         self.target_model = self.create_model()
         self.target_model.set_weights(self.model.get_weights())
+
         self.replay_memory = deque(maxlen=REPLAY_MEMORY_SIZE)
+
         self.tensorboard = ModifiedTensorBoard(log_dir=f"logs/{MODEL_NAME}-{int(time.time())}")
         self.target_update_counter = 0  # will track when it's time to update the target model
-        self.graph = tf.compat.v1.get_default_graph()
+        self.first_graph = tf.Graph()
+        self.second_graph = tf.Graph()
 
         self.terminate = False  # Should we quit?
         self.last_logged_episode = 0
         self.training_initialized = False  # waiting for TF to get rolling
 
+    # convolutional neural network creation
     def create_model(self):
-        tf.compat.v1.disable_eager_execution()
+        
         model = Sequential()
 
-        model.add(Conv2D(64, (3, 3), input_shape=(480,640,3),activation = "relu", padding='same'))
+        model.add(Convolution2D(64, (3, 3), input_shape=(480,640,3),activation = "relu", padding='same'))
         model.add(AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'))
 
-        model.add(Conv2D(64, (3, 3), activation = "relu", padding='same'))
+        model.add(Convolution2D(64, (3, 3), activation = "relu", padding='same'))
         model.add(AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'))
 
-        model.add(Conv2D(64, (3, 3), activation = "relu", padding='same'))
+        model.add(Convolution2D(64, (3, 3), activation = "relu", padding='same'))
         model.add(AveragePooling2D(pool_size=(5, 5), strides=(3, 3), padding='same'))
 
-        model.add(Flatten())
+        model.add(Flatten()) # flattens the tensor to be fed through the dense layers
         
         model.add(Dense(100, activation = "relu"))
         model.add(Dropout(0.5))
@@ -266,6 +311,7 @@ class Agent:
 
         model.add(Dense(8)) # eight actions
         model.compile(loss="mse", optimizer=Adam(lr=0.001), metrics=["accuracy"])
+        
         return model
 
     def update_replay_memory(self, transition):
@@ -273,7 +319,7 @@ class Agent:
         self.replay_memory.append(transition)
 
     def train(self):
-        # makes sure that there is enought information in memory
+        # makes sure that there is enough information in memory
         if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:
             return
         
@@ -283,14 +329,14 @@ class Agent:
         current state
         """
         current_states = np.array([transition[0] for transition in minibatch])/255
-        with self.graph.as_default():
+        with self.first_graph.as_default():
             current_qs_list = self.model.predict(current_states, PREDICTION_BATCH_SIZE)
 
         """
         future states
         """
         new_current_states = np.array([transition[3] for transition in minibatch])/255
-        with self.graph.as_default():
+        with self.second_graph.as_default():
             future_qs_list = self.target_model.predict(new_current_states, PREDICTION_BATCH_SIZE)
 
         X = []
@@ -317,8 +363,8 @@ class Agent:
             log_this_step = True
             self.last_log_episode = self.tensorboard.step
 
-
-        with self.graph.as_default():
+        
+        with self.first_graph.as_default():
             self.model.fit(np.array(X)/255, 
             np.array(y), 
             batch_size=TRAINING_BATCH_SIZE, 
@@ -338,19 +384,24 @@ class Agent:
         return self.model.predict(np.array(state).reshape(-1, *state.shape)/255)[0]
 
     def train_in_loop(self):
-        """
+        
+        # this fits the model with random data to make sure that the model has been created
         X = np.random.uniform(size=(1, IM_HEIGHT, IM_WIDTH, 3)).astype(np.float32)
-        y = np.random.uniform(size=(0, 8)).astype(np.float32)
-        with self.graph.as_default():
+        y = np.random.uniform(size=(1, 8)).astype(np.float32)
+        with self.first_graph.as_default():
             self.model.fit(X,y, verbose=False, batch_size=1)
-        """       
+       
+        time.sleep(1)
+        
+        # initilised the training loop      
         self.training_initialized = True
 
         while True:
             if self.terminate:
                 return
             self.train()
-            #time.sleep(0.01)
+            time.sleep(1/FPS)
+
 
 if __name__ == '__main__':
 
@@ -386,12 +437,14 @@ if __name__ == '__main__':
     # For more repetitive results
     random.seed(1)
     np.random.seed(1)
-    tf.random.set_seed(1)
+    tf.compat.v1.set_random_seed(1)
 
+    
     # Memory fraction, used mostly when trai8ning multiple agents
     gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
-    tf.compat.v1.keras.backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options)))
-
+    tf.global_variables_initializer()
+    set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
+    
     # Create models folder
     if not os.path.isdir('models'):
         os.makedirs('models')
@@ -403,6 +456,7 @@ if __name__ == '__main__':
     # Start training thread and wait for training to be initialized
     trainer_thread = Thread(target = agent.train_in_loop, daemon=True)
     trainer_thread.start()
+
     while not agent.training_initialized:
         time.sleep(0.01)
 
@@ -413,7 +467,7 @@ if __name__ == '__main__':
     # Iterate over episodes
     for episode in tqdm(range(1, EPISODES + 1), unit='episodes'):
         env.collision_hist = []
-
+                
         # Update tensorboard step every episode
         agent.tensorboard.step = episode
 
@@ -450,7 +504,6 @@ if __name__ == '__main__':
             step += 1
             #current_state = new_state
             
-
             if done:
                 break
     
@@ -475,113 +528,7 @@ if __name__ == '__main__':
             epsilon *= EPSILON_DECAY
             epsilon = max(MIN_EPSILON, epsilon)
 
-
     # Set termination flag for training thread and wait for it to finish
     agent.terminate = True
     trainer_thread.join()
     agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
-""" # ==============================================================================
-# -- game_loop() ---------------------------------------------------------------
-# ==============================================================================
-
-
-def game_loop(args):
-    pygame.init()
-    pygame.font.init()
-    world = None
-
-    try:
-        client = carla.Client(args.host, args.port)
-        client.set_timeout(2.0)
-
-        display = pygame.display.set_mode(
-            (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF)
-
-        hud = HUD(args.width, args.height)
-        world = World(client.get_world(), hud, args)
-        controller = KeyboardControl(world, args.autopilot)
-
-        clock = pygame.time.Clock()
-        while True:
-            clock.tick_busy_loop(60)
-            if controller.parse_events(client, world, clock):
-                return
-            world.tick(clock)
-            world.render(display)
-            pygame.display.flip()
-
-    finally:
-
-        if (world and world.recording_enabled):
-            client.stop_recorder()
-
-        if world is not None:
-            world.destroy()
-
-        pygame.quit()
-
-
-# main funtion where the arguments are set
-
-
-def main():
-    argparser = argparse.ArgumentParser(
-        description='CARLA Reinforment Learning Dissertation 2020')
-    argparser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        dest='debug',
-        help='print debug information')
-    argparser.add_argument(
-        '--host',
-        metavar='H',
-        default='localhost',
-        help='IP of the host server (default: localhost)')
-    argparser.add_argument(
-        '-p', '--port',
-        metavar='P',
-        default=2000,
-        type=int,
-        help='TCP port to listen to (default: 2000)')
-    argparser.add_argument(
-        '-a', '--autopilot',
-        action='store_true',
-        help='enable autopilot')
-    argparser.add_argument(
-        '--res',
-        metavar='WIDTHxHEIGHT',
-        default='640x480',
-        help='window resolution (default: 640x480)')
-    argparser.add_argument(
-        '--filter',
-        metavar='PATTERN',
-        default='vehicle.*',
-        help='actor filter (default: "vehicle.*")')
-    argparser.add_argument(
-        '--rolename',
-        metavar='NAME',
-        default='hero',
-        help='actor role name (default: "hero")')
-    argparser.add_argument(
-        '--gamma',
-        default=2.2,
-        type=float,
-        help='Gamma correction of the camera (default: 2.2)')
-    args = argparser.parse_args()
-
-    args.width, args.height = [int(x) for x in args.res.split('x')]
-
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(format='%(levelname)s: %(message)s', level=log_level)
-env
-
-        game_loop(args)
-
-    except KeyboardInterrupt:
-        print('\nCancelled by user. Bye!')
-
-
-if __name__ == "__main__":
-    main()
- """
